@@ -1,0 +1,579 @@
+#!/bin/bash
+## Execute to command bellow to be to call `kp-butler` from your terminal
+## sudo ln -s $HOME/path/to/kp-butler /usr/local/bin/
+
+set -euo pipefail
+
+# Configuration file path
+CONFIG_DIR="$HOME/.config/keepassxc-cli-butler"
+CONFIG_FILE="$CONFIG_DIR/config"
+
+helper.create_config_dir() {
+    # Create config directory if it doesn't exist
+    mkdir -p "$CONFIG_DIR" || {
+        echo "Error: Failed to create config directory: $CONFIG_DIR" >&2
+        return 1
+    }
+}
+
+# Get a specific config value
+helper.get_config_value() {
+    local key="$1"
+    if [[ -f "$CONFIG_FILE" ]]; then
+        grep "^${key}=" "$CONFIG_FILE" | cut -d'=' -f2-
+    fi
+}
+
+helper.update_config_value() {
+    local key="$1"
+    local value="$2"
+    
+    # Create config file if it doesn't exist
+    touch "$CONFIG_FILE"
+    
+    # Create a temporary file with all configs except the target key
+    local temp_file="${CONFIG_FILE}.tmp"
+    
+    # Copy all lines except the target key to temp file
+    if [[ -s "$CONFIG_FILE" ]]; then
+        grep -v "^${key}=" "$CONFIG_FILE" > "$temp_file"
+    else
+        : > "$temp_file"  # Create empty temp file
+    fi
+    
+    # Add the new key=value pair
+    echo "${key}=${value}" >> "$temp_file"
+    
+    # Replace the original file
+    mv "$temp_file" "$CONFIG_FILE"
+}
+
+helper.validate_database_presence() {
+    local db_path=$1
+
+    # Validate minimum requirements
+    if [[ -z "$db_path" ]]; then
+        echo "Error: Database path not configured" >&2
+        echo "Configure with: $0 config db <path>" >&2
+        return 1
+    fi
+    
+    if [[ ! -f "$db_path" ]]; then
+        echo "Error: Database file does not exist: $db_path" >&2
+        return 1
+    fi
+    
+    if [[ ! -r "$db_path" ]]; then
+        echo "Error: Database file is not readable: $db_path" >&2
+        return 1
+    fi    
+}
+
+helper.validate_keychain_access() {
+    local entry="$1"
+    
+    # Detect platform and test keychain access
+    case "$(uname -s)" in
+        "Darwin")
+            # macOS - use security command
+            security find-generic-password -a "$(whoami)" -s "$entry" -w >/dev/null 2>&1
+            ;;
+        *)
+            echo "Warning: Unsupported platform for keychain validation" >&2
+            return 0  # Assume it's valid if we can't test
+            ;;
+    esac
+}
+
+helper.validate_yubikey_presence() {
+    local serial="$1"
+
+    # Check using ykman if available
+    if command -v ykman >/dev/null 2>&1; then
+        if ykman list 2>/dev/null | grep -q $serial; then
+            return 0
+        fi
+    fi
+
+    # If no detection method available, assume it's okay
+    return 1
+}
+
+helper.validate_keepassxc_cli_presence() {
+  # Check if keepassxc-cli is available
+  if ! command -v keepassxc-cli >/dev/null 2>&1; then
+      echo "Error: keepassxc-cli command not found" >&2
+      echo "Please install KeePassXC" >&2
+      return 1
+  fi
+}
+
+helper.get_keychain_password() {
+    local entry="$1"
+    
+    case "$(uname -s)" in
+        "Darwin")
+            # macOS - use security command
+            security find-generic-password -s "$entry" -a "$(whoami)" -w 2>/dev/null
+            ;;
+        *)
+            echo "Warning: Unsupported platform for keychain validation" >&2
+            return 1
+            ;;
+    esac
+}
+
+config.set_database_path() {
+    local db_path="$1"
+    
+    # Input validation
+    if [[ -z "$db_path" ]]; then
+        echo "Error: Database path is required" >&2
+        echo "Usage: $0 config db <path>" >&2
+        return 1
+    fi
+
+    # Expand and convert to absolute path
+    # - first expand to tilde ~
+    # - then expand to $HOME
+    db_path="${db_path/#\~/$HOME}"
+    db_path="${db_path/#\$HOME/$HOME}"
+
+    # Path validation
+    if [[ ! -f "$db_path" ]]; then
+        echo "Error: Database file does not exist: $db_path" >&2
+        return 1
+    fi
+    
+    if [[ ! -r "$db_path" ]]; then
+        echo "Error: Database file is not readable: $db_path" >&2
+        return 1
+    fi
+    
+    # Check file extension
+    if [[ "$db_path" != *.kdbx ]]; then
+        echo "Warning: File does not have .kdbx extension: $db_path" >&2
+        return 1
+    fi
+    
+    helper.create_config_dir
+    
+    # Update or add DB_PATH in config file
+    helper.update_config_value "DB_PATH" "$db_path"
+    
+    echo "Database path configured: $db_path"
+    return 0
+}
+
+config.set_keychain_entry() {
+    local keychain_entry="$1"
+    
+    # Input validation
+    if [[ -z "$keychain_entry" ]]; then
+        echo "Error: Keychain entry name is required" >&2
+        echo "Usage: $0 config keychain <entry>" >&2
+        return 1
+    fi
+    
+    # Validate entry name format
+    if [[ ! "$keychain_entry" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        echo "Error: Invalid keychain entry name. Use only letters, numbers, dots, underscores, and hyphens" >&2
+        return 1
+    fi
+    
+    # Test keychain entry accessibility
+    if ! helper.validate_keychain_access "$keychain_entry"; then
+        echo "Error: Cannot access keychain entry: $keychain_entry" >&2
+        echo "Make sure the entry exists and is accessible" >&2
+        return 1
+    fi
+
+    helper.create_config_dir
+    
+    # Update or add DB_PATH in config file
+    helper.update_config_value "KEYCHAIN_ENTRY" "$keychain_entry"
+    
+    echo "Keychain entry configured: $keychain_entry"
+    return 0
+}
+
+# Update config of a yubikey serial number
+config.set_yubikey_serial() {
+    local yubikey_serial="$1"
+
+    # Input validation
+    if [[ -z "$yubikey_serial" ]]; then
+        echo "Error: YubiKey series is required" >&2
+        echo "Usage: $0 config yubikey <series>" >&2
+        echo "You can consult the serial number of your device with:" >&2
+        echo "ykman list" >&2
+        return 1
+    fi
+
+    # Optional: Check if YubiKey is connected (warning only)
+    if ! helper.validate_yubikey_presence "$yubikey_serial"; then
+        echo "Warning: YubiKey series $yubikey_serial not detected" >&2
+    fi
+
+    helper.create_config_dir
+
+    # Update config preserving other values
+    helper.update_config_value "YUBIKEY_SERIAL" "$yubikey_serial"
+
+    echo "YubiKey serial configured: $yubikey_serial"
+    return 0
+} 
+
+config.check_config_status() {
+    echo "KeePassXC CLI Butler Configuration Status"
+    echo "======================================"
+    echo
+    
+    # Check if config file exists
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo "❌ No configuration file found"
+        echo "   Config file: $CONFIG_FILE"
+        echo
+        echo "Get started with:"
+        echo "  $0 config db <path-to-database>"
+        echo "  $0 config keychain <entry-name>"
+        echo "  $0 config yubikey <series>"
+        return 0
+    fi
+    
+    # Load configuration values
+    local db_path=$(helper.get_config_value "DB_PATH")
+    local keychain_entry=$(helper.get_config_value "KEYCHAIN_ENTRY")
+    local yubikey_serial=$(helper.get_config_value "YUBIKEY_SERIAL")
+    
+    # Check database configuration
+    echo "Database Configuration:"
+    if [[ -n "$db_path" ]]; then
+        echo "  Path: $db_path"
+        if [[ -f "$db_path" ]]; then
+            if [[ -r "$db_path" ]]; then
+                echo "  Status: ✅ Valid and accessible"
+            else
+                echo "  Status: ❌ File exists but not readable"
+            fi
+        else
+            echo "  Status: ❌ File does not exist"
+        fi
+    else
+        echo "  Status: ❌ Not configured"
+        echo "  Configure with: $0 config db <path>"
+    fi
+    echo
+    
+    # Check keychain configuration
+    echo "Keychain Configuration:"
+    if [[ -n "$keychain_entry" ]]; then
+        echo "  Entry: $keychain_entry"
+        if helper.validate_keychain_access "$keychain_entry"; then
+            echo "  Status: ✅ Entry accessible"
+        else
+            echo "  Status: ❌ Entry not accessible or doesn't exist"
+        fi
+    else
+        echo "  Status: ❌ Not configured"
+        echo "  Configure with: $0 config keychain <entry>"
+    fi
+    echo
+    
+    # Check YubiKey configuration
+    echo "YubiKey Configuration:"
+    if [[ -n "$yubikey_serial" ]]; then
+        echo "  Serial: $yubikey_serial"
+        if helper.validate_yubikey_presence "$yubikey_serial"; then
+            echo "  Status: ✅ Device detected"
+        else
+            echo "  Status: ⚠️  Device not detected (configured for future use)"
+        fi
+    else
+        echo "  Status: ❌ Not configured"
+        echo "  Configure with: $0 config yubikey <series>"
+    fi
+    echo
+    
+    # Overall status summary
+    local configured_count=0
+    local valid_count=0
+    
+    if [[ -n "$db_path" ]]; then
+        ((configured_count++))
+        if [[ -f "$db_path" && -r "$db_path" ]]; then
+            ((valid_count++))
+        fi
+    fi
+    
+    if [[ -n "$keychain_entry" ]]; then
+        ((configured_count++))
+        if helper.validate_keychain_access "$keychain_entry"; then
+            ((valid_count++))
+        fi
+    fi
+    
+    if [[ -n "$yubikey_serial" ]]; then
+        ((configured_count++))
+        # YubiKey presence is optional, so count as valid if configured
+        ((valid_count++))
+    fi
+    
+    echo "Overall Status:"
+    if [[ $configured_count -eq 3 && $valid_count -eq 3 ]]; then
+        echo "  ✅ All components configured and working"
+    elif [[ $configured_count -eq 3 ]]; then
+        echo "  ⚠️  All components configured, some issues detected"
+    elif [[ $configured_count -gt 0 ]]; then
+        echo "  ⚠️  Partially configured ($configured_count/3 components)"
+    else
+        echo "  ❌ No components configured"
+    fi
+    
+    echo
+    echo "Config file: $CONFIG_FILE"
+}
+
+execute_keepassxc() {
+    local args=("$@")
+    
+    # Load configuration
+    local db_path=$(helper.get_config_value "DB_PATH")
+    local keychain_entry=$(helper.get_config_value "KEYCHAIN_ENTRY")
+
+    helper.validate_keepassxc_cli_presence || {
+      return 1
+    }
+
+    helper.validate_database_presence $db_path || {
+      return 1
+    }
+    
+    # Handle password from keychain
+    if [[ -n "$keychain_entry" ]]; then
+        if helper.validate_keychain_access "$keychain_entry"; then
+            local password
+            password=$(helper.get_keychain_password "$keychain_entry")
+            local keychain_exit=$?
+
+            if [[ keychain_exit -eq 0 && -n "$password" ]]; then
+                # Pass password via replacement stdin
+                keepassxc-cli \
+                  "${args[@]}" \
+                  < <(printf '%s' $password)
+                return $?
+            else
+                echo "Error: Failed to retrieve database password from keychain" >&2
+                echo "Check the Keychain entry $keychain_entry" >&2
+                return 1
+            fi
+        else
+            echo "Error: Keychain entry not accessible" >&2
+            echo "Set your database password in the system keychain under entry $keychain_entry" >&2
+            return 1
+        fi
+    else
+        echo "Error: keychain entry not configured" >&2
+        echo "Configure with: $0 config keychain <entry>" >&2
+        return 1
+    fi
+
+    return 1
+}
+
+execute_keepassxc_sync() {
+    local args=("$@")
+    
+    # Load configuration
+    local db_path=$(helper.get_config_value "DB_PATH")
+    local keychain_entry=$(helper.get_config_value "KEYCHAIN_ENTRY")
+
+    helper.validate_keepassxc_cli_presence || {
+      return 1
+    }
+
+    helper.validate_database_presence $db_path || {
+      return 1
+    }
+    
+    # Handle password from keychain
+    if [[ -n "$keychain_entry" ]]; then
+        if helper.validate_keychain_access "$keychain_entry"; then
+            local password
+            password=$(helper.get_keychain_password "$keychain_entry")
+            local keychain_exit=$?
+
+            if [[ keychain_exit -eq 0 && -n "$password" ]]; then
+                # Create a temporary tmp file with restrictive write permission, allowing only its creator and root
+                TMPFILE=$(mktemp /tmp/keepass-secret.XXXXXXXXXX) || exit 1
+                # Destroys the file on script exit, even in case of errors
+                trap 'rm -f "$TMPFILE"' EXIT
+
+                # Spawn interactive terminal for YubiKey prompt
+                osascript -e "tell app \"Terminal\" to do script \"keepassxc-cli ${args[@]} < <(printf '%s' $password) > '$TMPFILE'; exit\"" - e 'return' 1>/dev/null
+
+                # Wait for secret (max 30 seconds)
+                timeout=30
+                while [[ ! -s "$TMPFILE" && $timeout -gt 0 ]]; do
+                  sleep 1
+                  ((timeout--))
+                done
+
+                secret=$(cat "$TMPFILE" 2>/dev/null)
+
+                if [[ -n "$secret" ]]; then
+                  echo -n "$secret"
+                  exit 0
+                else
+                  echo "ERROR: Secret retrieval failed" >&2
+                  exit 1
+                fi
+            else
+                echo "Error: Failed to retrieve database password from keychain" >&2
+                echo "Check the Keychain entry $keychain_entry" >&2
+                return 1
+            fi
+        else
+            echo "Error: Keychain entry not accessible" >&2
+            echo "Set your database password in the system keychain under entry $keychain_entry" >&2
+            return 1
+        fi
+    else
+        echo "Error: keychain entry not configured" >&2
+        echo "Configure with: $0 config keychain <entry>" >&2
+        return 1
+    fi
+
+    return 1
+}
+
+get_keepassxc_entry() {
+    local entry=$1
+    
+    # Load configuration
+    local db_path=$(helper.get_config_value "DB_PATH")
+    local yubikey_serial=$(helper.get_config_value "YUBIKEY_SERIAL")
+
+    # Prepare keepassxc-cli arguments
+    local yubikey_args=()
+    
+    # Add YubiKey options if configured
+    if [[ -n "$yubikey_serial" ]]; then
+        yubikey_args+=("-y" "2:$yubikey_serial")
+    fi
+
+    execute_keepassxc show -q -s -a password \
+      "${yubikey_args[@]}" \
+      "$db_path" \
+      "$entry"
+}
+
+# Retrieve password without direct interaction with YubiKey device
+get_keepassxc_entry_sync() {
+    local entry="$1"
+
+    # Load configuration
+    local db_path=$(helper.get_config_value "DB_PATH")
+    local yubikey_serial=$(helper.get_config_value "YUBIKEY_SERIAL")
+
+    # Prepare keepassxc-cli arguments
+    local yubikey_args=()
+    
+    # Add YubiKey options if configured
+    if [[ -n "$yubikey_serial" ]]; then
+        yubikey_args+=("-y" "2:$yubikey_serial")
+    fi
+
+    execute_keepassxc_sync show -q -s -a password \
+      "${yubikey_args[@]}" \
+      "$db_path" \
+      "$entry"
+}
+
+list_keepassxc_entries() {
+    # Load configuration
+    local db_path=$(helper.get_config_value "DB_PATH")
+    local yubikey_serial=$(helper.get_config_value "YUBIKEY_SERIAL")
+
+    # Prepare keepassxc-cli arguments
+    local yubikey_args=()
+    
+    # Add YubiKey options if configured
+    if [[ -n "$yubikey_serial" ]]; then
+        yubikey_args+=("-y" "2:$yubikey_serial")
+    fi
+
+    execute_keepassxc ls -q -R \
+      "${yubikey_args[@]}" \
+      "$db_path"
+}
+
+list_keepassxc_entries_sync() {
+    # Load configuration
+    local db_path=$(helper.get_config_value "DB_PATH")
+    local yubikey_serial=$(helper.get_config_value "YUBIKEY_SERIAL")
+
+    # Prepare keepassxc-cli arguments
+    local yubikey_args=()
+    
+    # Add YubiKey options if configured
+    if [[ -n "$yubikey_serial" ]]; then
+        yubikey_args+=("-y" "2:$yubikey_serial")
+    fi
+
+    execute_keepassxc_sync ls -q -R \
+      "${yubikey_args[@]}" \
+      "$db_path"
+}
+
+config.usage() {
+    echo "Usage: $0 config {db|keychain|yubikey|status} [value]" >&2
+}
+
+usage() {
+    echo "Usage: $0 get <entry_name>"
+    echo "Usage: $0 get_sync <entry_name>"
+    echo "       $0 list"
+    echo "       $0 list_sync"
+}
+
+case "${1:-}" in
+    config)
+        case "$2" in
+            "db")
+                config.set_database_path "$3"
+                ;;
+            "keychain")
+                config.set_keychain_entry "$3"
+                ;;
+            "yubikey")
+                config.set_yubikey_serial "$3"
+                ;;
+            "status")
+                config.check_config_status
+                ;;
+            *)
+                config.usage
+                exit 1
+                ;;
+        esac
+        ;;
+    get)
+        [ $# -eq 2 ] || usage
+        get_keepassxc_entry "$2"
+        ;;
+    get_sync)
+        [ $# -eq 2 ] || usage
+        get_keepassxc_entry_sync "$2"
+        ;;
+    list)
+        list_keepassxc_entries
+        ;;
+    list_sync)
+        list_keepassxc_entries_sync
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+esac
