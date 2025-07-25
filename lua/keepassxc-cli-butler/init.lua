@@ -43,7 +43,10 @@ function M.setup(opts)
 	end
 
 	if not M.config.yubikey_serial_number then
-		vim.notify("Yubikey serial number not configured. Please set a yubikey_serial_number", vim.log.levels.WARN)
+		vim.notify(
+			"⚠️  Yubikey serial number not configured. Please set a yubikey_serial_number",
+			vim.log.levels.WARN
+		)
 	end
 
 	-- Auto-detect or set binary path
@@ -64,10 +67,20 @@ function M.setup(opts)
 		end
 	end
 
-	butler.config_set_database_path(M.config.database_path, M.config.binary_path)
-	butler.config_set_keychain_entry(M.config.database_password_entry, M.config.binary_path)
+	local function is_blank(value)
+		return value == nil or value == ""
+	end
 
-	if M.config.yubikey_serial_number then
+	local entries = butler.config_get_entries(M.config.binary_path)
+	if is_blank(entries["DB_PATH"]) then
+		butler.config_set_database_path(M.config.database_path, M.config.binary_path)
+	end
+
+	if is_blank(entries["KEYCHAIN_ENTRY"]) then
+		butler.config_set_keychain_entry(M.config.database_password_entry, M.config.binary_path)
+	end
+
+	if is_blank(entries["YUBIKEY_SERIAL"]) and M.config.yubikey_serial_number then
 		butler.config_set_yubikey_serial(M.config.yubikey_serial_number, M.config.binary_path)
 	end
 end
