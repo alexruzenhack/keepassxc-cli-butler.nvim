@@ -537,17 +537,20 @@ list_keepassxc_entries_sync() {
 
 config.usage() {
     echo "Usage: $0 config {db|keychain|yubikey|status} [value]" >&2
+    echo "       $0 config show"
+    echo "       $0 config help"
 }
 
 usage() {
     echo "Usage: $0 get <entry_name>"
-    echo "Usage: $0 get_sync <entry_name>"
+    echo "       $0 get_sync <entry_name>"
     echo "       $0 list"
     echo "       $0 list_sync"
+    echo "       $0 help"
 }
 
 case "${1:-}" in
-    config)
+    "config")
         case "$2" in
             "db")
                 config.set_database_path "$3"
@@ -564,25 +567,31 @@ case "${1:-}" in
             "show")
                 config.get_config_entries
                 ;;
+            "help")
+                config.usage
+                ;;
             *)
                 config.usage
                 exit 1
                 ;;
         esac
         ;;
-    get)
+    "get")
         [ $# -eq 2 ] || usage
         get_keepassxc_entry "$2"
         ;;
-    get_sync)
+    "get_sync")
         [ $# -eq 2 ] || usage
         get_keepassxc_entry_sync "$2"
         ;;
-    list)
+    "list")
         list_keepassxc_entries
         ;;
-    list_sync)
+    "list_sync")
         list_keepassxc_entries_sync
+        ;;
+    "help")
+        usage
         ;;
     *)
         usage
