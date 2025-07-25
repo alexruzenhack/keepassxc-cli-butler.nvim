@@ -60,3 +60,15 @@ vim.api.nvim_create_user_command("KeepassStatus", function()
 end, {
 	desc = "Show KeePass plugin status",
 })
+
+-- Command: Get config entries
+vim.api.nvim_create_user_command("KeepassConfig", function()
+	local entries = bluter.config_get_entries()
+	if entries then
+		for key, value in pairs(entries) do
+			print(key .. "=" .. value)
+		end
+	end
+end, {
+	desc = "Show config entries",
+})
