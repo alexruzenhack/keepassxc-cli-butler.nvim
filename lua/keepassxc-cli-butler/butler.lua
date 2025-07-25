@@ -31,7 +31,7 @@ function M.get_secret_sync(entry, binary_path)
 
 	-- read from the handle buffer content
 	-- - despite the usage of a file API, handle is not a file
-	-- - the data was streammed from the spawned process  direct to lua process
+	-- - the data was streammed from the spawned process direct to lua process
 	local result = handle:read("*a")
 	local success, exit_type, exit_code = handle:close()
 
@@ -163,6 +163,43 @@ function M.config_set_yubikey_serial(entry, binary_path)
 			vim.log.levels.ERROR
 		)
 	end
+end
+
+function M.config_get_entries(binary_path)
+	-- default to embedded kp-butler script command
+	binary_path = binary_path or "kp-butler"
+
+	-- results in `kp-butler config show` command
+	local command = binary_path .. " config show"
+
+	-- call the command in a new process
+	local handle, err = io.popen(command)
+
+	if not handle then
+		vim.notify("❌ " .. "Command failed to execute: " .. (err or "unknown error"), vim.log.levels.ERROR)
+		return nil
+	end
+
+	-- read from the handle buffer content
+	-- - despite the usage of a file API, handle is not a file
+	-- - the data was streammed from the spawned process  direct to lua process
+	local entries = handle:read("*a")
+	local success, exit_type, exit_code = handle:close()
+
+	if not success then
+		vim.notify(
+			"❌ " .. string.format("Command exited abnormally [%s:%d]", exit_type, exit_code),
+			vim.log.levels.ERROR
+		)
+	end
+
+	-- extract key-value pairs from entries
+	local entriesTable = {}
+	for key, value in entries:gmatch("([%w_]+)=([^\n]+)") do
+		entriesTable[key] = value
+	end
+
+	return entriesTable
 end
 
 -- Integration with telescope.nvim or vim.ui.select
