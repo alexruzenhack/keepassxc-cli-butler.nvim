@@ -31,11 +31,28 @@ Secure KeePassXC CLI integration for Neovim with YubiKey support.
 }
 ```
 
+## CLI Installation
+
+You may want to use the undelaying CLI command kp-butler directly.
+
+First, you nee to find where the plugin was installed and then:
+
+```sh
+sudo ln -s <plugins>/keepassxc-cli-butler/bin/kp-butler /usr/local/bin/kp-butler
+```
+
+Once installed:
+
+```sh
+kp-butler help
+```
+
 ## Commands
 
-- [ ]  `:KeepassGet <entry>` - Retrieve secret and copy to clipboard
-- [ ] `:KeepassInsert <entry>` - Retrieve secret and insert at cursor  
-- [ ] `:KeepassStatus` - Show plugin status and configuration
+- [x]  `:KeepassGet <entry>` - Retrieve secret and copy to clipboard
+- [x] `:KeepassInsert <entry>` - Retrieve secret and insert at cursor  
+- [x] `:KeepassStatus` - Show plugin status and configuration
+- [x] `:KeepassConfig` - Show configuration entries
 
 ## API
 
