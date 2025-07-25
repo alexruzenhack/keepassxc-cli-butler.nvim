@@ -334,6 +334,15 @@ config.check_config_status() {
     echo "Config file: $CONFIG_FILE"
 }
 
+config.get_config_entries() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        cat "$CONFIG_FILE"
+    else
+      echo "Error: Config file not found: $CONFIG_FILE" >&2
+      return 1
+    fi
+}
+
 execute_keepassxc() {
     local args=("$@")
     
@@ -551,6 +560,9 @@ case "${1:-}" in
                 ;;
             "status")
                 config.check_config_status
+                ;;
+            "show")
+                config.get_config_entries
                 ;;
             *)
                 config.usage
